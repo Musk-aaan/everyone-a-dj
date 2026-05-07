@@ -69,18 +69,54 @@ def _call(prompt: str, *, audio_path: Optional[Path] = None,
     return r.json()["choices"][0]["message"]["content"].strip()
 
 
+def _repair_json_strings(s: str) -> str:
+    """Escape unescaped newlines/tabs inside JSON string values."""
+    result: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in s:
+        if escaped:
+            result.append(ch)
+            escaped = False
+        elif ch == '\\' and in_string:
+            result.append(ch)
+            escaped = True
+        elif ch == '"':
+            result.append(ch)
+            in_string = not in_string
+        elif in_string and ch == '\n':
+            result.append('\\n')
+        elif in_string and ch == '\r':
+            result.append('\\r')
+        elif in_string and ch == '\t':
+            result.append('\\t')
+        else:
+            result.append(ch)
+    return ''.join(result)
+
+
 def _parse_json(raw: str) -> Any:
     """Parse JSON from a model response, stripping code fences if present."""
     raw = re.sub(r'^```(?:json)?\s*', '', raw.strip())
     raw = re.sub(r'\s*```$', '', raw)
+    # Try 1: direct parse
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        # Sometimes the model surrounds JSON with prose — extract the outermost object/array
-        m = re.search(r'(\{.*\}|\[.*\])', raw, re.DOTALL)
-        if not m:
-            raise RuntimeError(f"Brain did not return JSON. Got: {raw[:200]!r}")
+        pass
+    # Try 2: repair unescaped control chars inside strings, then parse
+    try:
+        return json.loads(_repair_json_strings(raw))
+    except json.JSONDecodeError:
+        pass
+    # Try 3: extract outermost object/array, then repair + parse
+    m = re.search(r'(\{.*\}|\[.*\])', raw, re.DOTALL)
+    if not m:
+        raise RuntimeError(f"Brain did not return JSON. Got: {raw[:200]!r}")
+    try:
         return json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return json.loads(_repair_json_strings(m.group(0)))
 
 
 # ── Song picker ──────────────────────────────────────────────────────────────
