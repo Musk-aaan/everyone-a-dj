@@ -210,64 +210,104 @@ def pick_section(*, title: str, analysis: dict, lyrics: dict, n_lines: int = 8) 
 
 # ── Transition planner ───────────────────────────────────────────────────────
 
-_PLAN_TRANSITION_PROMPT = """You are planning a transition between two songs in a DJ set.
+_PLAN_TRANSITION_PROMPT = """You are a DJ choosing how to transition between two
+songs. Pick ONE technique from the menu below — your choice should reflect
+what a real DJ would do given these specific songs.
 
-OUTGOING (currently playing, last few bars):
-  title:  {out_title}
-  bpm:    {out_bpm}
-  key:    {out_key} {out_mode}
-  end_lyric: {out_lyric!r}
+OUTGOING (currently playing, ending soon):
+  title:        {out_title}
+  bpm:          {out_bpm}
+  key:          {out_key} {out_mode}
+  has_stems:    {out_stems}     (vocals/drums/bass/other available?)
+  end_lyric:    {out_lyric!r}
 
-INCOMING (about to drop):
-  title:  {in_title}
-  bpm:    {in_bpm}
-  key:    {in_key} {in_mode}
-  start_lyric: {in_lyric!r}
+INCOMING (about to play):
+  title:        {in_title}
+  bpm:          {in_bpm}
+  key:          {in_key} {in_mode}
+  has_stems:    {in_stems}
+  start_lyric:  {in_lyric!r}
 
-Design the transition. Real DJ techniques you can use:
-  - hpf_sweep: progressively cut bass + mids on outgoing's last bars (creates tension)
-  - riser: white-noise sweep building toward the drop
-  - stutter: repeat the last beat 3-6 times with decay
-  - reverb_throw: huge reverb on outgoing's last note
-  - downlifter: bass whoosh sweeping down
-  - flanger: comb-filter wobble on outgoing
-  - bass_swap: cut sub-200Hz on outgoing while bringing in incoming's bass
-  - silence_gap: brief 100-300ms silence right before the drop
-  - crash: cymbal hit at the moment incoming starts
-  - crossfade: smooth volume blend (use only for cool-down moments)
+POSITION IN SET: transition {position} of {total} (0=warm-up→peak,
+                  middle=climax, last=cool-down)
+
+CRITICAL CONSTRAINTS:
+
+- **Variety matters.** Real DJs don't use the same technique 3 times in a
+  row. If the previous transition was bass_swap, this one should NOT also
+  be bass_swap unless there's a strong musical reason. Push toward
+  acapella_drop, drum_swap, reverb_throw, hard_drop when stems allow.
+
+- **Drops are special.** hard_drop adds energy; dramatic_drop is the climax
+  moment. Use them at peak positions in the set (middle transitions of a
+  4-song set), not for cool-downs.
+
+- **Stems unlock the good moves.** When stems are available for the right
+  song, prefer acapella_drop / drum_swap / reverb_throw over the boring
+  bass_swap default.
+
+- bass_swap is the safe fallback for genuinely smooth-blend moments
+  (cool-down, similar tempo + similar genre + nothing iconic happening).
+  Don't pick it just because you're unsure.
+
+TECHNIQUE MENU (pick exactly one):
+
+1. "bass_swap"     — Clean 8-bar EQ blend. Two tracks layer with frequency
+                     separation, hard bass cut at midpoint phrase boundary.
+                     The default safe choice. Works without stems.
+
+2. "acapella_drop" — Incoming's vocals layer over outgoing's beat for 4 bars,
+                     then full incoming takes over. The actual mashup move.
+                     Requires INCOMING stems. Best when both songs have
+                     prominent vocals and similar tempos.
+
+3. "drum_swap"     — Outgoing's vocals continue but incoming's drums replace
+                     outgoing's drums. The "Kanye-style beat switch."
+                     Requires BOTH stems. Best for energy shifts where the
+                     vocal singer is iconic.
+
+4. "tempo_ramp"    — Time-stretches outgoing's last 4 bars to match incoming
+                     BPM, then bass-swap blend. USE THIS when |out_bpm - in_bpm| > 20
+                     — it's the only way to bridge a tempo mismatch cleanly.
+
+5. "reverb_throw"  — Outgoing's last vocal phrase drenched in big reverb that
+                     trails into incoming. Cinematic / epic feel. Requires
+                     OUTGOING stems. Best for emotional or cool-down moments.
+
+6. "hard_drop"     — 1 beat of total silence + CRASH cymbal + incoming's full
+                     mix slams in on beat 1. <2 seconds total. The classic
+                     festival drop. Use for HIGH-IMPACT moments where the
+                     incoming song's drop is itself an iconic moment.
+
+7. "dramatic_drop" — Like hard_drop but bigger: outgoing fades, 1.5 beats
+                     silence, crash, then 2 bars of bass+drums build, then
+                     full mix slam. ~5-7 seconds total. Use ONLY ONCE PER SET
+                     at the absolute climax. Requires INCOMING stems.
 
 Return ONLY this JSON:
 {{
-  "technique": "<one phrase describing the overall approach>",
-  "build_bars": <int, how many bars before the drop the build starts>,
-  "fx": [
-    {{"name": "hpf_sweep", "start_bar": -8, "end_bar": -1,
-      "low_hz": 100, "high_hz": 14000}},
-    {{"name": "riser", "start_bar": -8, "end_bar": -0.5, "gain": 0.45}},
-    {{"name": "stutter", "start_bar": -1, "end_bar": -0.25, "n_reps": 4}},
-    {{"name": "crash", "at_bar": 0, "gain": 0.9}}
-  ],
-  "silence_ms": <int, 0-300>,
-  "use_bass_swap": <true|false>,
-  "fade_kind": "drop | crossfade",
-  "reasoning": "<2-3 sentences: why these choices given the BPM/key/lyric context>"
-}}
-
-Bars are relative to the drop moment (bar 0 = first bar of incoming song).
-Negative bars are during the outgoing song's tail."""
+  "technique": "<one of: bass_swap | acapella_drop | drum_swap | tempo_ramp | reverb_throw | hard_drop | dramatic_drop>",
+  "reasoning": "<2-3 sentences: why this technique fits these two songs and this position in the set>"
+}}"""
 
 
 def plan_transition(*,
                     out_title: str, out_bpm: float, out_key: str, out_mode: str,
-                    out_lyric: str,
+                    out_lyric: str, out_stems: bool,
                     in_title: str,  in_bpm: float, in_key: str, in_mode: str,
-                    in_lyric: str) -> dict:
-    """Design a transition between two songs given their musical context."""
+                    in_lyric: str, in_stems: bool,
+                    position: int, total: int) -> dict:
+    """LLM picks ONE transition technique by name from a fixed menu.
+
+    Returns: {"technique": str, "reasoning": str}.
+    The orchestrator dispatches to the matching render function.
+    """
     prompt = _PLAN_TRANSITION_PROMPT.format(
         out_title=out_title, out_bpm=out_bpm, out_key=out_key, out_mode=out_mode,
-        out_lyric=out_lyric or "(instrumental)",
+        out_lyric=out_lyric or "(instrumental)", out_stems=str(out_stems).lower(),
         in_title=in_title, in_bpm=in_bpm, in_key=in_key, in_mode=in_mode,
-        in_lyric=in_lyric or "(instrumental)",
+        in_lyric=in_lyric or "(instrumental)", in_stems=str(in_stems).lower(),
+        position=position, total=total,
     )
     return _parse_json(_call(prompt, max_tokens=800))
 

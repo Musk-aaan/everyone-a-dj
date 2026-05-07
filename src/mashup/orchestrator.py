@@ -26,6 +26,11 @@ import numpy as np
 from . import analyze as analyze_mod
 from . import cache, config, discover, lyrics, plan, render, stems
 
+
+class FallbackToBassSwap(Exception):
+    """Sentinel: requested technique couldn't run (stems missing). Use bass_swap."""
+    pass
+
 # ── Result type ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -223,135 +228,101 @@ def _render_pipeline(enriched: list[dict],
     fi = int(0.1 * config.SR)
     mix[:, :fi] *= np.linspace(0, 1, fi)
 
-    # Transition strategy — design a story arc with deliberate variety:
-    #   T0  (warm-up → peak):       acapella drop      (introduce next vocal)
-    #   T1  (peak → climax):        TASTEFUL DROP      (the moment — silence + crash + bass)
-    #                               or drum swap (if BPMs match)
-    #   T2  (climax → cool-down):   reverb throw       (epic vocal trail + bass swap)
-    # When BPMs differ by >25, ALWAYS use tempo ramp first, then bass swap.
-    # All stem-based techniques fall back to bass swap if stems missing.
+    # The LLM picks the technique per transition (see plan.plan_transition).
+    # Orchestrator just dispatches. If the LLM picks a stem-based technique
+    # but the stems aren't available, we silently fall back to bass_swap.
     n_trans = len(transitions)
-    climax_idx = max(0, n_trans - 2) if n_trans >= 2 else 0   # T1 in 4-song / T_n-2 generally
 
-    for i, _t in enumerate(transitions):
-        prev_e = enriched[i]
-        next_e = enriched[i + 1]
-        next_audio = section_audio[i + 1]
-        prev_has = prev_e.get("has_stems")
-        next_has = next_e.get("has_stems")
-        is_last = (i == n_trans - 1)
-        is_climax = (i == climax_idx)
-
-        # ── BPM mismatch: always tempo-ramp first ─────────────────────────
+    for i, t in enumerate(transitions):
+        prev_e   = enriched[i]
+        next_e   = enriched[i + 1]
+        next_aud = section_audio[i + 1]
         prev_bpm = prev_e["analysis"]["bpm"]
         next_bpm = next_e["analysis"]["bpm"]
-        if abs(prev_bpm - next_bpm) > 25:
-            on_progress(
-                f"  transition {i+1}/{n_trans}: TEMPO RAMP "
-                f"({prev_bpm:.0f} → {next_bpm:.0f} BPM) + bass swap"
-            )
-            mix = render.tempo_ramp_blend(
-                mix, next_audio, a_bpm=prev_bpm, b_bpm=next_bpm,
-                ramp_bars=4, fade_bars=4,
-            )
-            continue
+        sid_prev = prev_e["candidate"].song_id
+        sid_next = next_e["candidate"].song_id
+        sec_prev = prev_e["section"]
+        sec_next = next_e["section"]
 
-        # ── Climax transition: TASTEFUL DROP ─────────────────────────────
-        if is_climax and n_trans >= 2:
-            sid_next = next_e["candidate"].song_id
-            sec_next = next_e["section"]
-            b_bass = render.load_stem(sid_next, "bass", sec_next["start"], sec_next["end"])
-            b_drums = render.load_stem(sid_next, "drums", sec_next["start"], sec_next["end"])
-            if b_bass is not None:
-                b_bass = render.bpm_stretch(b_bass, next_bpm, target_bpm)
-            if b_drums is not None:
-                b_drums = render.bpm_stretch(b_drums, next_bpm, target_bpm)
-            on_progress(
-                f"  transition {i+1}/{n_trans}: TASTEFUL DROP "
-                f"(beat-aligned: 1.5-beat silence + crash + 2-bar build → slam)"
-            )
-            mix = render.tasteful_drop(
-                mix, next_audio, b_bass=b_bass, b_drums=b_drums,
-                silence_beats=1.5, intro_bars=2, fade_beats=2,
-                crash_gain=0.95, bpm=target_bpm,
-            )
-            continue
+        technique = (t.get("technique") or "bass_swap").strip().lower()
+        reasoning = t.get("reasoning", "")
+        on_progress(f"  transition {i+1}/{n_trans}: {technique.upper()}  "
+                    f"— {reasoning[:70]}")
 
-        if i == 1 and prev_has and next_has:
-            # DRUM SWAP — needs both songs' stems
-            prev_sec = prev_e["section"]
-            next_sec = next_e["section"]
-            sid_prev = prev_e["candidate"].song_id
-            sid_next = next_e["candidate"].song_id
-
-            voc_prev = render.load_stem(sid_prev, "vocals", prev_sec["start"], prev_sec["end"])
-            bass_prev = render.load_stem(sid_prev, "bass", prev_sec["start"], prev_sec["end"])
-            other_prev = render.load_stem(sid_prev, "other", prev_sec["start"], prev_sec["end"])
-            drums_next = render.load_stem(sid_next, "drums", next_sec["start"], next_sec["end"])
-
-            if all(s is not None for s in (voc_prev, bass_prev, other_prev, drums_next)):
-                # Build A's no-drums = vocals + bass + other
-                from numpy import zeros
-                ramp = render.bpm_stretch
-                rate_prev = prev_e["analysis"]["bpm"]
-                voc_prev   = ramp(voc_prev,   rate_prev, target_bpm)
-                bass_prev  = ramp(bass_prev,  rate_prev, target_bpm)
-                other_prev = ramp(other_prev, rate_prev, target_bpm)
-                # Trim to common length
-                m = min(voc_prev.shape[1], bass_prev.shape[1], other_prev.shape[1], mix.shape[1])
-                a_no_drums_full = voc_prev[:, :m] + bass_prev[:, :m] + other_prev[:, :m]
-
-                drums_next = ramp(drums_next, next_e["analysis"]["bpm"], target_bpm)
-
-                on_progress(
-                    f"  transition {i+1}/{n_trans}: DRUM SWAP "
-                    f"({prev_e['candidate'].title[:24]}'s vocals + "
-                    f"{next_e['candidate'].title[:24]}'s drums)"
+        # ── Dispatch table ────────────────────────────────────────────────
+        try:
+            if technique == "tempo_ramp" or abs(prev_bpm - next_bpm) > 25:
+                # Override: BPM mismatch always wins, regardless of LLM pick
+                mix = render.tempo_ramp_blend(
+                    mix, next_aud, a_bpm=prev_bpm, b_bpm=next_bpm,
+                    ramp_bars=4, fade_bars=4,
                 )
+
+            elif technique == "acapella_drop" and next_e.get("has_stems"):
+                voc = render.load_stem(sid_next, "vocals", sec_next["start"], sec_next["end"])
+                if voc is None: raise FallbackToBassSwap()
+                voc = render.bpm_stretch(voc, next_bpm, target_bpm)
+                mix = render.acapella_drop_blend(
+                    mix, next_aud, voc, fade_bars=8, bpm=target_bpm,
+                )
+
+            elif technique == "drum_swap" and prev_e.get("has_stems") and next_e.get("has_stems"):
+                voc_p   = render.load_stem(sid_prev, "vocals", sec_prev["start"], sec_prev["end"])
+                bass_p  = render.load_stem(sid_prev, "bass",   sec_prev["start"], sec_prev["end"])
+                other_p = render.load_stem(sid_prev, "other",  sec_prev["start"], sec_prev["end"])
+                drums_n = render.load_stem(sid_next, "drums",  sec_next["start"], sec_next["end"])
+                if any(s is None for s in (voc_p, bass_p, other_p, drums_n)):
+                    raise FallbackToBassSwap()
+                voc_p   = render.bpm_stretch(voc_p,   prev_bpm, target_bpm)
+                bass_p  = render.bpm_stretch(bass_p,  prev_bpm, target_bpm)
+                other_p = render.bpm_stretch(other_p, prev_bpm, target_bpm)
+                drums_n = render.bpm_stretch(drums_n, next_bpm, target_bpm)
+                m = min(voc_p.shape[1], bass_p.shape[1], other_p.shape[1], mix.shape[1])
+                a_no_drums = voc_p[:, :m] + bass_p[:, :m] + other_p[:, :m]
                 mix = render.drum_swap_blend(
-                    mix, next_audio, a_no_drums_full, drums_next,
+                    mix, next_aud, a_no_drums, drums_n,
                     fade_bars=8, bpm=target_bpm,
                 )
-                continue
 
-        # ── Last transition + previous song has stems: REVERB THROW ──────
-        if is_last and prev_has:
-            sid_prev = prev_e["candidate"].song_id
-            sec_prev = prev_e["section"]
-            voc_prev = render.load_stem(sid_prev, "vocals", sec_prev["start"], sec_prev["end"])
-            if voc_prev is not None:
-                voc_prev = render.bpm_stretch(voc_prev, prev_bpm, target_bpm)
-                on_progress(
-                    f"  transition {i+1}/{n_trans}: REVERB THROW "
-                    f"({prev_e['candidate'].title[:24]}'s vocals trail into reverb)"
-                )
+            elif technique == "reverb_throw" and prev_e.get("has_stems"):
+                voc_p = render.load_stem(sid_prev, "vocals", sec_prev["start"], sec_prev["end"])
+                if voc_p is None: raise FallbackToBassSwap()
+                voc_p = render.bpm_stretch(voc_p, prev_bpm, target_bpm)
                 mix = render.reverb_throw_blend(
-                    mix, next_audio, voc_prev, fade_bars=8, bpm=target_bpm,
+                    mix, next_aud, voc_p, fade_bars=8, bpm=target_bpm,
                 )
-                continue
 
-        if not is_last and next_has:
-            # ACAPELLA DROP — needs incoming song's vocals
-            sec = next_e["section"]
-            voc = render.load_stem(next_e["candidate"].song_id, "vocals",
-                                   sec["start"], sec["end"])
-            if voc is not None:
-                voc = render.bpm_stretch(voc, next_e["analysis"]["bpm"], target_bpm)
-                on_progress(
-                    f"  transition {i+1}/{n_trans}: ACAPELLA DROP "
-                    f"({next_e['candidate'].title[:24]}'s vocals over "
-                    f"{prev_e['candidate'].title[:24]}'s beat)"
+            elif technique == "hard_drop":
+                mix = render.hard_drop(
+                    mix, next_aud,
+                    silence_beats=1.0, crash_gain=0.95, bpm=target_bpm,
                 )
-                mix = render.acapella_drop_blend(
-                    mix, next_audio, voc, fade_bars=8, bpm=target_bpm,
-                )
-                continue
 
-        # Default: clean bass-swap blend (always works, no stems needed)
-        on_progress(f"  transition {i+1}/{n_trans}: 8-bar bass-swap blend")
-        mix = render.bass_swap_crossfade(
-            mix, next_audio, fade_bars=8, bpm=target_bpm,
-        )
+            elif technique == "bass_swap":
+                mix = render.bass_swap_crossfade(
+                    mix, next_aud, fade_bars=8, bpm=target_bpm,
+                )
+
+            elif technique == "dramatic_drop" and next_e.get("has_stems"):
+                b_bass  = render.load_stem(sid_next, "bass",  sec_next["start"], sec_next["end"])
+                b_drums = render.load_stem(sid_next, "drums", sec_next["start"], sec_next["end"])
+                if b_bass is not None:  b_bass  = render.bpm_stretch(b_bass,  next_bpm, target_bpm)
+                if b_drums is not None: b_drums = render.bpm_stretch(b_drums, next_bpm, target_bpm)
+                mix = render.dramatic_drop(
+                    mix, next_aud, b_bass=b_bass, b_drums=b_drums,
+                    silence_beats=1.5, intro_bars=2, fade_beats=2,
+                    crash_gain=0.95, bpm=target_bpm,
+                )
+
+            else:
+                # Unknown / unsatisfied technique → bass_swap fallback
+                raise FallbackToBassSwap()
+
+        except FallbackToBassSwap:
+            on_progress(f"      (falling back to bass_swap — stems missing for {technique})")
+            mix = render.bass_swap_crossfade(
+                mix, next_aud, fade_bars=8, bpm=target_bpm,
+            )
 
     # Long fade out at the end
     fo_n = min(int(12.0 * config.SR), mix.shape[1])
@@ -444,7 +415,8 @@ def make_mashup(
     t0 = time.time()
     on_progress(f"\n[4/6] Planning {len(enriched) - 1} transitions...")
     transitions: list[dict] = []
-    for i in range(len(enriched) - 1):
+    n_total = len(enriched) - 1
+    for i in range(n_total):
         out_e, in_e = enriched[i], enriched[i + 1]
         on_progress(f"  {out_e['candidate'].title[:32]} → {in_e['candidate'].title[:32]}")
         t = plan.plan_transition(
@@ -453,11 +425,14 @@ def make_mashup(
             out_key=out_e["analysis"]["key"],
             out_mode=out_e["analysis"]["mode"],
             out_lyric=out_e["last_lyric"],
+            out_stems=out_e.get("has_stems", False),
             in_title=in_e["candidate"].title,
             in_bpm=in_e["analysis"]["bpm"],
             in_key=in_e["analysis"]["key"],
             in_mode=in_e["analysis"]["mode"],
             in_lyric=in_e["first_lyric"],
+            in_stems=in_e.get("has_stems", False),
+            position=i, total=n_total,
         )
         transitions.append(t)
     timings["plan_transitions_s"] = round(time.time() - t0, 2)

@@ -329,7 +329,37 @@ def reverb_throw_blend(
     return blended
 
 
-def tasteful_drop(
+def hard_drop(
+    a: np.ndarray,
+    b_full: np.ndarray,
+    *,
+    silence_beats: float = 1.0,
+    crash_gain: float = 1.0,
+    bpm: float = 115.0,
+) -> np.ndarray:
+    """The classic festival/club drop — short, punchy, <2 seconds total.
+
+      1. Hard cut at end of A (no fade — the cut IS the drama)
+      2. Exactly `silence_beats` of silence (default 1 beat = ~0.6s at 99 BPM)
+      3. CRASH cymbal + B's full mix slam in simultaneously on beat 1
+
+    No quiet bass intro, no fade. The whole "drop moment" lasts about as long
+    as the silence — usually under a second. The contrast of total silence
+    against full-volume slam is what makes it pop.
+
+    Use this 80% of the time you want a drop. Reserve `dramatic_drop` for
+    once-per-set big moments.
+    """
+    SR = config.SR
+    beat_n = int(60.0 / bpm * SR)
+    silence_n = int(silence_beats * beat_n)
+
+    silence = np.zeros((2, silence_n), dtype=np.float32)
+    out_b = stamp_crash(b_full.astype(np.float32), gain=crash_gain)
+    return np.concatenate([a.astype(np.float32), silence, out_b], axis=1)
+
+
+def dramatic_drop(
     a: np.ndarray,
     b_full: np.ndarray,
     b_bass: Optional[np.ndarray] = None,
@@ -341,22 +371,18 @@ def tasteful_drop(
     crash_gain: float = 1.0,
     bpm: float = 115.0,
 ) -> np.ndarray:
-    """The climax moment — used ONCE per set, no more.
+    """Long, theatrical drop — for ONCE-PER-SET climax moments only.
 
-    Pattern (everything beat-quantised — system-level fix for the mistiming
-    Gemini diagnosed):
+    Use `hard_drop` for normal drops. This one is 5-7 seconds long and only
+    earns its keep at the absolute peak of the set.
+
       1. A's last `fade_beats` beats fade from full → silent
-         (sample-exact, so the silence starts on a beat)
-      2. Exactly `silence_beats` of total silence (default 1.5 beats)
-      3. CRASH cymbal hits exactly when silence ends (= on a beat)
-      4. `intro_bars` of bass + drums only — sample-exact bar lengths
-      5. Full mix slams in at the next downbeat after the intro
+      2. `silence_beats` of total silence
+      3. CRASH on beat 1
+      4. `intro_bars` of bass + drums only (the wind-up)
+      5. Full mix slams in at the next downbeat
 
-    Default: 1.5 beats of silence (= 0.94s at 96 BPM, 0.78s at 115 BPM).
-    Scales correctly to song BPM unlike absolute ms.
-
-    The previous bug was using absolute milliseconds for silence and crash
-    placement, causing them to drift off-beat when songs had different BPMs.
+    Everything beat-quantised so it scales correctly across BPMs.
     """
     SR = config.SR
     beat_n = int(60.0 / bpm * SR)
