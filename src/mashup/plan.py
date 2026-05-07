@@ -205,7 +205,7 @@ def pick_section(*, title: str, analysis: dict, lyrics: dict, n_lines: int = 8) 
         n_lines=n_lines,
         lyrics_excerpt=excerpt,
     )
-    return _parse_json(_call(prompt, max_tokens=400))
+    return _parse_json(_call(prompt, max_tokens=700))
 
 
 # ── Transition planner ───────────────────────────────────────────────────────
