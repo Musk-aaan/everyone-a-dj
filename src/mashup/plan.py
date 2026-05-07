@@ -149,6 +149,7 @@ Return ONLY this JSON, nothing else:
     {{"youtube_id": "<id from candidates>", "title": "<title>",
       "role": "warm_up | first_peak | climax | cool_down",
       "approx_bpm": <integer, your best guess>,
+      "genre": "<short genre tag, e.g. 'Punjabi hip-hop', 'Bollywood pop', 'English R&B', 'EDM', 'bhangra', etc.>",
       "reason": "<one sentence: why this song in this slot, AND how its BPM fits the band>"}}
   ],
   "target_bpm_band": "<e.g. '110-130 BPM'>",
@@ -252,6 +253,7 @@ what a real DJ would do given these specific songs.
 
 OUTGOING (currently playing, ending soon):
   title:        {out_title}
+  genre:        {out_genre}
   bpm:          {out_bpm}
   key:          {out_key} {out_mode}
   has_stems:    {out_stems}     (vocals/drums/bass/other available?)
@@ -259,6 +261,7 @@ OUTGOING (currently playing, ending soon):
 
 INCOMING (about to play):
   title:        {in_title}
+  genre:        {in_genre}
   bpm:          {in_bpm}
   key:          {in_key} {in_mode}
   has_stems:    {in_stems}
@@ -268,6 +271,14 @@ POSITION IN SET: transition {position} of {total} (0=warm-up→peak,
                   middle=climax, last=cool-down)
 
 CRITICAL CONSTRAINTS:
+
+- **Genre compatibility is a hard rule.** hard_drop and dramatic_drop slam
+  the listener straight into the next song with NO blending — this only works
+  when both songs are from the SAME or CLOSELY RELATED genres. If out_genre
+  and in_genre are significantly different (e.g. Punjabi hip-hop → Bollywood
+  pop, English R&B → bhangra, EDM → desi folk), the hard cut will sound like
+  a crash. In those cases use bass_swap, reverb_throw, or acapella_drop which
+  provide a blending buffer that hides the genre shift.
 
 - **Variety matters.** Real DJs don't use the same technique 3 times in a
   row. If the previous transition was bass_swap, this one should NOT also
@@ -329,9 +340,9 @@ Return ONLY this JSON:
 
 def plan_transition(*,
                     out_title: str, out_bpm: float, out_key: str, out_mode: str,
-                    out_lyric: str, out_stems: bool,
+                    out_lyric: str, out_stems: bool, out_genre: str = "unknown",
                     in_title: str,  in_bpm: float, in_key: str, in_mode: str,
-                    in_lyric: str, in_stems: bool,
+                    in_lyric: str, in_stems: bool, in_genre: str = "unknown",
                     position: int, total: int) -> dict:
     """LLM picks ONE transition technique by name from a fixed menu.
 
@@ -341,8 +352,10 @@ def plan_transition(*,
     prompt = _PLAN_TRANSITION_PROMPT.format(
         out_title=out_title, out_bpm=out_bpm, out_key=out_key, out_mode=out_mode,
         out_lyric=out_lyric or "(instrumental)", out_stems=str(out_stems).lower(),
+        out_genre=out_genre,
         in_title=in_title, in_bpm=in_bpm, in_key=in_key, in_mode=in_mode,
         in_lyric=in_lyric or "(instrumental)", in_stems=str(in_stems).lower(),
+        in_genre=in_genre,
         position=position, total=total,
     )
     return _parse_json(_call(prompt, max_tokens=800))

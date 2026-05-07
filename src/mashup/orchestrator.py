@@ -411,10 +411,12 @@ def make_mashup(
     # Map picked youtube_ids back to Candidate objects (validate)
     by_id = {c.youtube_id: c for c in candidates}
     picked: list[discover.Candidate] = []
+    genre_by_ytid: dict[str, str] = {}
     for s in selection.get("songs", []):
         c = by_id.get(s.get("youtube_id"))
         if c:
             picked.append(c)
+            genre_by_ytid[c.youtube_id] = s.get("genre", "unknown")
     if len(picked) < 2:
         raise RuntimeError(f"LLM picked invalid yt_ids; only {len(picked)} match candidates.")
 
@@ -439,6 +441,8 @@ def make_mashup(
     for i in range(n_total):
         out_e, in_e = enriched[i], enriched[i + 1]
         on_progress(f"  {out_e['candidate'].title[:32]} → {in_e['candidate'].title[:32]}")
+        out_ytid = out_e["candidate"].youtube_id
+        in_ytid  = in_e["candidate"].youtube_id
         t = plan.plan_transition(
             out_title=out_e["candidate"].title,
             out_bpm=out_e["analysis"]["bpm"],
@@ -446,12 +450,14 @@ def make_mashup(
             out_mode=out_e["analysis"]["mode"],
             out_lyric=out_e["last_lyric"],
             out_stems=out_e.get("has_stems", False),
+            out_genre=genre_by_ytid.get(out_ytid, "unknown"),
             in_title=in_e["candidate"].title,
             in_bpm=in_e["analysis"]["bpm"],
             in_key=in_e["analysis"]["key"],
             in_mode=in_e["analysis"]["mode"],
             in_lyric=in_e["first_lyric"],
             in_stems=in_e.get("has_stems", False),
+            in_genre=genre_by_ytid.get(in_ytid, "unknown"),
             position=i, total=n_total,
         )
         transitions.append(t)
