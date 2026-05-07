@@ -465,12 +465,14 @@ def drum_swap_blend(
     # ── Outgoing A's tail
     a_tail = a_full[:, -fn:].copy().astype(np.float32)
     a_no_drums_tail = a_no_drums[:, -fn:].astype(np.float32)
-    # Phase 2: hard-swap A's full mix for A's no-drums version
+    # Phase 2: hard-swap A's full mix for A's no-drums version (vocals + bass + other)
     a_tail[:, half:] = a_no_drums_tail[:, half:]
-    # A's volume: full through phase 1, ramps down very gently in phase 2
-    # (shouldn't fully fade — we want the vocals to carry)
+    # A's volume: full through phase 1, fades to ZERO over phase 2.
+    # Previously ramped to 0.4 — Gemini caught the leftover A vocals bleeding
+    # into B's section as muddy. End-of-overlap must be A=0 so B's full mix
+    # is clean.
     a_vol = np.ones(fn, dtype=np.float32)
-    a_vol[half:] = np.linspace(1.0, 0.4, fn - half)
+    a_vol[half:] = np.linspace(1.0, 0.0, fn - half)
     a_tail *= a_vol
 
     # ── Incoming B's drums layered in phase 2
@@ -583,10 +585,14 @@ def acapella_drop_blend(
 
     half = fn // 2
 
-    # ── Outgoing A's tail: full mix in phase 1, fade-out in phase 2
+    # ── Outgoing A's tail: ducks during phase 1 (so B's vocals can sit on top
+    # without competing), then fades to silence in phase 2.
+    # Previously played at full volume in phase 1 — Gemini caught this as
+    # "muddy / vocals fighting." Ducking to 0.6 leaves headroom.
     a_tail = a[:, -fn:].copy().astype(np.float32)
     a_vol = np.ones(fn, dtype=np.float32)
-    a_vol[half:] = np.linspace(1.0, 0.0, fn - half)
+    a_vol[:half] = 0.6                                          # ducked under B's vocals
+    a_vol[half:] = np.linspace(0.6, 0.0, fn - half)             # fade to silence
     a_tail *= a_vol
 
     # ── Incoming B's head: vocals only in phase 1 (with quick fade-in), full mix in phase 2

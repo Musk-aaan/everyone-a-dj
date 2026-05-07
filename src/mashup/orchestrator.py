@@ -311,9 +311,11 @@ def _render_pipeline(enriched: list[dict],
                     next_aud_drop = render.bpm_stretch(next_aud_drop, next_bpm, target_bpm)
                 else:
                     next_aud_drop = next_aud
+                # crash_gain 0.95 + B's full mix at full volume can clip the limiter
+                # → distortion. 0.7 leaves headroom, the contrast with silence still pops.
                 mix = render.hard_drop(
                     mix, next_aud_drop,
-                    silence_beats=1.0, crash_gain=0.95, bpm=target_bpm,
+                    silence_beats=1.0, crash_gain=0.7, bpm=target_bpm,
                 )
 
             elif technique == "bass_swap":
