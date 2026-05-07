@@ -268,11 +268,12 @@ def _render_pipeline(enriched: list[dict],
                 b_drums = render.bpm_stretch(b_drums, next_bpm, target_bpm)
             on_progress(
                 f"  transition {i+1}/{n_trans}: TASTEFUL DROP "
-                f"(700ms silence + crash + 2-bar bass+drums build → full mix slam)"
+                f"(beat-aligned: 1.5-beat silence + crash + 2-bar build → slam)"
             )
             mix = render.tasteful_drop(
                 mix, next_audio, b_bass=b_bass, b_drums=b_drums,
-                silence_ms=700, intro_bars=2, crash_gain=0.95, bpm=target_bpm,
+                silence_beats=1.5, intro_bars=2, fade_beats=2,
+                crash_gain=0.95, bpm=target_bpm,
             )
             continue
 

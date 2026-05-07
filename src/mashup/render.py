@@ -46,10 +46,52 @@ from . import cache, config, stems
 
 # ── Loading sources ──────────────────────────────────────────────────────────
 
-def load_stem(song_id: str, stem: str, start_s: float, end_s: float) -> Optional[np.ndarray]:
-    """Load a single stem ('vocals'|'drums'|'bass'|'other') if available, else None."""
+def snap_to_downbeat(song_id: str, start_s: float, end_s: float) -> tuple[float, float]:
+    """Snap [start_s, end_s] to the song's downbeat grid.
+
+    System-level fix for off-beat transitions. Returns the nearest downbeat at
+    or after `start_s` and the nearest downbeat at or after `end_s`. This
+    guarantees:
+      - section starts on beat 1 of a bar
+      - section ends on beat 1 of a bar (so OUTGOING transitions also start
+        on a downbeat — every fx in the renderer is then beat-aligned)
+      - section length is a whole number of bars
+
+    Falls back to the original (start_s, end_s) if no analysis is cached or
+    the snap would yield a section shorter than 8 bars.
+    """
+    a = cache.read_json(cache.analysis_path(song_id))
+    if not a:
+        return start_s, end_s
+    downbeats = a.get("downbeats", []) or []
+    duration_s = a.get("duration_s", float("inf"))
+    if not downbeats:
+        return start_s, end_s
+
+    snap_start = next((d for d in downbeats if d >= start_s - 0.05), start_s)
+    snap_end   = next((d for d in downbeats if d >= end_s   - 0.05), end_s)
+
+    if snap_start >= duration_s or snap_end > duration_s:
+        return start_s, end_s
+
+    bar_s = a.get("bar_duration_s", 2.0)
+    if snap_end - snap_start < 8 * bar_s:
+        return start_s, end_s
+
+    return float(snap_start), float(snap_end)
+
+
+def load_stem(song_id: str, stem: str, start_s: float, end_s: float,
+              *, snap: bool = True) -> Optional[np.ndarray]:
+    """Load a single stem ('vocals'|'drums'|'bass'|'other') if available, else None.
+
+    With `snap=True` (default), start_s/end_s are snapped to the song's
+    downbeat grid via `snap_to_downbeat()`.
+    """
     if not stems.has_stems(song_id):
         return None
+    if snap:
+        start_s, end_s = snap_to_downbeat(song_id, start_s, end_s)
     import librosa
     p = stems.stem_paths(song_id)[stem]
     y, _ = librosa.load(str(p), sr=config.SR, mono=False, offset=start_s, duration=end_s - start_s)
@@ -64,9 +106,14 @@ def load_section(
     end_s: float,
     *,
     stem_mix: Optional[dict[str, float]] = None,
+    snap: bool = True,
 ) -> np.ndarray:
     """Load `start_s..end_s` of a song. If `stem_mix` is given, mix stems at
     those levels instead of using the full track.
+
+    With `snap=True` (default), the section is downbeat-aligned via
+    `snap_to_downbeat()` before loading — the most important system-level
+    fix for off-beat transitions.
 
     `stem_mix` example: {'vocals': 1.0, 'drums': 1.0, 'bass': 0.0, 'other': 0.7}
     (drops the bass for the bass-swap transition; quiet 'other' for cleaner mix)
@@ -74,6 +121,9 @@ def load_section(
     Returns a [2, samples] float32 array at config.SR.
     """
     import librosa
+
+    if snap:
+        start_s, end_s = snap_to_downbeat(song_id, start_s, end_s)
 
     sr = config.SR
     s_off = start_s
@@ -285,53 +335,60 @@ def tasteful_drop(
     b_bass: Optional[np.ndarray] = None,
     b_drums: Optional[np.ndarray] = None,
     *,
-    silence_ms: int = 700,
+    silence_beats: float = 1.5,
     intro_bars: int = 2,
+    fade_beats: int = 2,
     crash_gain: float = 1.0,
     bpm: float = 115.0,
 ) -> np.ndarray:
     """The climax moment — used ONCE per set, no more.
 
-    Pattern:
-      1. A's tail: last 1 bar fades from full → silent (so the cut isn't jarring)
-      2. 700ms of complete silence (the "wait for it" moment)
-      3. CRASH cymbal hits hard
-      4. `intro_bars` of bass + drums ONLY (the wind-up — quieter)
-      5. Full mix slams in (the pay-off — loud contrast)
+    Pattern (everything beat-quantised — system-level fix for the mistiming
+    Gemini diagnosed):
+      1. A's last `fade_beats` beats fade from full → silent
+         (sample-exact, so the silence starts on a beat)
+      2. Exactly `silence_beats` of total silence (default 1.5 beats)
+      3. CRASH cymbal hits exactly when silence ends (= on a beat)
+      4. `intro_bars` of bass + drums only — sample-exact bar lengths
+      5. Full mix slams in at the next downbeat after the intro
 
-    Earlier version had two bugs:
-      - silence was only 400ms (too short to feel deliberate)
-      - bass-only intro was 1 bar (~2.6s at 92 BPM, too short to register)
-      - bass intro at 0.95 gain made the full mix slam less impactful
-    Now: 700ms silence, 2 bars of bass+drums at 0.7 gain, then full mix at 1.0.
+    Default: 1.5 beats of silence (= 0.94s at 96 BPM, 0.78s at 115 BPM).
+    Scales correctly to song BPM unlike absolute ms.
+
+    The previous bug was using absolute milliseconds for silence and crash
+    placement, causing them to drift off-beat when songs had different BPMs.
     """
+    SR = config.SR
+    beat_n = int(60.0 / bpm * SR)
+    bar_n  = beat_n * 4
+
     a_out = a.copy().astype(np.float32)
 
-    # 1. Fade A's last bar to silence (avoid the click/jolt of a hard cut)
-    bar_n = int(4 * 60.0 / bpm * config.SR)
-    fade_n = min(bar_n, a_out.shape[1])
+    # 1. Fade A's last `fade_beats` beats to silence
+    fade_n = min(fade_beats * beat_n, a_out.shape[1])
     a_out[:, -fade_n:] *= np.linspace(1.0, 0.0, fade_n)
 
-    # 2. Total silence
-    silence = np.zeros((2, int(silence_ms / 1000 * config.SR)), dtype=np.float32)
+    # 2. Sample-exact silence (length = silence_beats × beat duration)
+    silence_n = int(silence_beats * beat_n)
+    silence = np.zeros((2, silence_n), dtype=np.float32)
 
-    # 3-5. Build the incoming side
+    # 3-5. Build the incoming side, sample-aligned
     if b_bass is None:
         # Simple drop: just stamp crash on top of full mix
         out_b = stamp_crash(b_full.astype(np.float32), gain=crash_gain)
     else:
-        # Big drop: bass-only (or bass+drums) intro for `intro_bars`, then full mix
+        # Bass + drums intro for exactly `intro_bars` bars, then full mix
         intro_n = intro_bars * bar_n
         intro_n = min(intro_n, b_full.shape[1], b_bass.shape[1])
 
-        # Build the intro layer: bass + drums (if available) at lower volume
         intro = b_bass[:, :intro_n].astype(np.float32) * 0.65
         if b_drums is not None:
-            d = b_drums[:, :intro_n].astype(np.float32) * 0.7
+            d = b_drums[:, :intro_n].astype(np.float32) * 0.75
             intro += d[:, : intro.shape[1]]
 
         b_rest = b_full[:, intro_n:].astype(np.float32)
         out_b = np.concatenate([intro, b_rest], axis=1)
+        # Crash sits at the very start (lands on beat 1 of the intro)
         out_b = stamp_crash(out_b, gain=crash_gain)
 
     return np.concatenate([a_out, silence, out_b], axis=1)
