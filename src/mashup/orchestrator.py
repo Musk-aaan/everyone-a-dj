@@ -103,6 +103,14 @@ def _bpm_hint(c: discover.Candidate) -> Optional[float]:
     return float(a["bpm"]) if a and "bpm" in a else None
 
 
+def _key_hint(c: discover.Candidate) -> Optional[str]:
+    """Look up cached key+mode (e.g. 'C major') for a candidate."""
+    a = cache.read_json(cache.analysis_path(c.song_id))
+    if a and "key" in a and "mode" in a:
+        return f"{a['key']} {a['mode']}"
+    return None
+
+
 def _filter_bpm_outliers(candidates: list, max_spread: float = 30.0) -> list:
     """Drop candidates whose cached BPM is more than `max_spread` from the
     median of the candidate pool. Songs without cached BPMs are kept (we
@@ -400,11 +408,14 @@ def make_mashup(
     t0 = time.time()
     bpm_hints = {c.youtube_id: bpm for c in candidates
                  if (bpm := _bpm_hint(c)) is not None}
+    key_hints = {c.youtube_id: k for c in candidates
+                 if (k := _key_hint(c)) is not None}
     on_progress(
         f"\n[2/6] LLM picking {n_songs} songs from {len(candidates)} candidates "
-        f"({len(bpm_hints)} with cached BPM hints)..."
+        f"({len(bpm_hints)} with cached BPM hints, {len(key_hints)} with key hints)..."
     )
-    selection = plan.pick_songs(vibe, candidates, n=n_songs, bpm_hints=bpm_hints)
+    selection = plan.pick_songs(vibe, candidates, n=n_songs,
+                                bpm_hints=bpm_hints, key_hints=key_hints)
     on_progress(f"      Narrative: {selection.get('narrative', '')}")
     timings["pick_songs_s"] = round(time.time() - t0, 2)
 
@@ -438,6 +449,7 @@ def make_mashup(
     on_progress(f"\n[4/6] Planning {len(enriched) - 1} transitions...")
     transitions: list[dict] = []
     n_total = len(enriched) - 1
+    prev_technique: Optional[str] = None
     for i in range(n_total):
         out_e, in_e = enriched[i], enriched[i + 1]
         on_progress(f"  {out_e['candidate'].title[:32]} → {in_e['candidate'].title[:32]}")
@@ -459,8 +471,10 @@ def make_mashup(
             in_stems=in_e.get("has_stems", False),
             in_genre=genre_by_ytid.get(in_ytid, "unknown"),
             position=i, total=n_total,
+            previous_technique=prev_technique,
         )
         transitions.append(t)
+        prev_technique = t.get("technique")
     timings["plan_transitions_s"] = round(time.time() - t0, 2)
 
     # ── 5. RENDER ────────────────────────────────────────────────────────

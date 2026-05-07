@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Everyone a DJ</title>
+<style>
+  :root {
+    --bg: #090910;
+    --bg2: #12121f;
+    --bg3: #1a1a2e;
+    --accent: #7c3aed;
+    --accent2: #4f46e5;
+    --green: #10b981;
+    --red: #ef4444;
+    --text: #e8e8f0;
+    --muted: #6b7280;
+    --border: #2d2d4e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 48px 16px 80px;
+  }
+
+  /* Header */
+  header { text-align: center; margin-bottom: 40px; }
+  header h1 {
+    font-size: clamp(2rem, 5vw, 3.5rem);
+    font-weight: 800;
+    background: linear-gradient(135deg, #a78bfa, #60a5fa, #34d399);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: -1px;
+  }
+  header p {
+    color: var(--muted);
+    margin-top: 8px;
+    font-size: 1.05rem;
+  }
+
+  /* Card */
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px;
+    width: 100%;
+    max-width: 700px;
+    margin-bottom: 24px;
+  }
+
+  /* Vibe input */
+  textarea#vibe {
+    width: 100%;
+    background: var(--bg3);
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-size: 1.05rem;
+    padding: 16px;
+    resize: vertical;
+    min-height: 96px;
+    outline: none;
+    transition: border-color 0.2s;
+    font-family: inherit;
+  }
+  textarea#vibe:focus { border-color: var(--accent); }
+  textarea#vibe::placeholder { color: var(--muted); }
+
+  /* Options row */
+  .options {
+    display: flex;
+    gap: 16px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .opt-label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+  .opt-label select, .opt-label input[type=number] {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 6px 10px;
+    font-size: 0.9rem;
+    outline: none;
+    width: 90px;
+  }
+  .toggle-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    color: var(--muted);
+    margin-top: auto;
+  }
+  .toggle-wrap input[type=checkbox] { accent-color: var(--accent); transform: scale(1.2); }
+
+  /* Button */
+  button#generate {
+    margin-top: 20px;
+    width: 100%;
+    padding: 15px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border: none;
+    border-radius: 10px;
+    color: #fff;
+    font-size: 1.05rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+    letter-spacing: 0.3px;
+  }
+  button#generate:hover { opacity: 0.9; }
+  button#generate:active { transform: scale(0.98); }
+  button#generate:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Progress card */
+  #progress-card { display: none; }
+  #progress-card.visible { display: block; }
+
+  .phase-bar {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .phase {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    transition: all 0.3s;
+  }
+  .phase.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .phase.done { background: var(--green); border-color: var(--green); color: #fff; }
+
+  #log {
+    background: #0d0d18;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    height: 280px;
+    overflow-y: auto;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 0.8rem;
+    line-height: 1.6;
+    color: #a5b4fc;
+  }
+  .log-line { margin-bottom: 2px; }
+  .log-line.phase-header { color: #e8e8f0; font-weight: 700; margin-top: 6px; }
+  .log-line.warn { color: #fbbf24; }
+  .log-line.error { color: var(--red); }
+
+  /* Pulse animation */
+  @keyframes pulse-ring {
+    0% { box-shadow: 0 0 0 0 rgba(124,58,237,0.4); }
+    70% { box-shadow: 0 0 0 12px rgba(124,58,237,0); }
+    100% { box-shadow: 0 0 0 0 rgba(124,58,237,0); }
+  }
+  #status-dot {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse-ring 1.5s infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  #status-dot.done { background: var(--green); animation: none; }
+  #status-dot.error { background: var(--red); animation: none; }
+
+  /* Result card */
+  #result-card { display: none; }
+  #result-card.visible { display: block; }
+
+  .result-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .check-icon {
+    width: 36px; height: 36px;
+    background: var(--green);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.2rem;
+    flex-shrink: 0;
+  }
+  .result-header h2 { font-size: 1.3rem; font-weight: 700; }
+  .result-header p { color: var(--muted); font-size: 0.88rem; }
+
+  audio {
+    width: 100%;
+    height: 48px;
+    margin-bottom: 20px;
+    accent-color: var(--accent);
+    border-radius: 8px;
+  }
+
+  /* Song list */
+  .song-list { display: flex; flex-direction: column; gap: 10px; }
+  .song-row {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .song-num {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.8rem; font-weight: 700; flex-shrink: 0;
+  }
+  .song-info { flex: 1; min-width: 0; }
+  .song-title { font-weight: 600; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .song-meta { color: var(--muted); font-size: 0.78rem; margin-top: 2px; }
+  .song-role {
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .role-warm_up { background: #1d4ed8; }
+  .role-first_peak { background: #0f766e; }
+  .role-climax { background: #9333ea; }
+  .role-cool_down { background: #374151; }
+
+  .transition-arrow {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.78rem;
+    padding: 4px 0;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .transition-arrow .technique {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 2px 8px;
+    color: var(--accent);
+    font-size: 0.72rem;
+    font-weight: 600;
+  }
+
+  /* Score badge */
+  .score-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 0.85rem;
+    margin-top: 12px;
+  }
+  .score-badge .score-val { font-weight: 700; color: var(--green); font-size: 1rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Everyone a DJ</h1>
+  <p>Describe a vibe. Get a professional mashup.</p>
+</header>
+
+<!-- Input card -->
+<div class="card">
+  <textarea id="vibe" placeholder="e.g. Bollywood hits + English pop, house party vibes, 25-35 crowd, energetic banger..."></textarea>
+
+  <div class="options">
+    <label class="opt-label">
+      Songs
+      <input type="number" id="n-songs" value="4" min="2" max="6" />
+    </label>
+    <label class="opt-label">
+      Candidates
+      <input type="number" id="n-candidates" value="12" min="6" max="24" />
+    </label>
+    <label class="toggle-wrap">
+      <input type="checkbox" id="do-stems" checked />
+      Stems (best transitions)
+    </label>
+    <label class="toggle-wrap">
+      <input type="checkbox" id="do-critique" />
+      Gemini critique
+    </label>
+  </div>
+
+  <button id="generate" onclick="generate()">Generate Mashup</button>
+</div>
+
+<!-- Progress card -->
+<div class="card" id="progress-card">
+  <div style="display:flex; align-items:center; margin-bottom:14px;">
+    <span id="status-dot"></span>
+    <span id="status-text" style="font-weight:600; font-size:0.95rem;">Starting...</span>
+  </div>
+  <div class="phase-bar" id="phase-bar">
+    <span class="phase" data-phase="1">1 Discover</span>
+    <span class="phase" data-phase="2">2 Pick</span>
+    <span class="phase" data-phase="3">3 Enrich</span>
+    <span class="phase" data-phase="4">4 Transitions</span>
+    <span class="phase" data-phase="5">5 Render</span>
+    <span class="phase" data-phase="6">6 Critique</span>
+  </div>
+  <div id="log"></div>
+</div>
+
+<!-- Result card -->
+<div class="card" id="result-card">
+  <div class="result-header">
+    <div class="check-icon">✓</div>
+    <div>
+      <h2>Your Mashup is Ready</h2>
+      <p id="duration-text"></p>
+    </div>
+  </div>
+
+  <audio id="player" controls></audio>
+
+  <div class="song-list" id="song-list"></div>
+  <div id="critique-block"></div>
+</div>
+
+<script>
+let jobId = null;
+let sseSource = null;
+let currentPhase = 0;
+const phaseKeywords = [null, 'Discover', 'LLM picking', 'Enriching', 'Planning', 'Rendering', 'Critique'];
+
+async function generate() {
+  const vibe = document.getElementById('vibe').value.trim();
+  if (!vibe) { alert('Please enter a vibe first!'); return; }
+
+  // Reset UI
+  document.getElementById('generate').disabled = true;
+  document.getElementById('log').innerHTML = '';
+  document.getElementById('song-list').innerHTML = '';
+  document.getElementById('critique-block').innerHTML = '';
+  document.getElementById('result-card').classList.remove('visible');
+  document.getElementById('progress-card').classList.add('visible');
+  document.getElementById('status-dot').className = '';
+  document.getElementById('status-text').textContent = 'Starting pipeline...';
+  currentPhase = 0;
+  document.querySelectorAll('.phase').forEach(el => el.className = 'phase');
+  if (sseSource) { sseSource.close(); sseSource = null; }
+
+  try {
+    const resp = await fetch('/make-mashup', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        vibe,
+        n: parseInt(document.getElementById('n-songs').value),
+        candidates: parseInt(document.getElementById('n-candidates').value),
+        stems: document.getElementById('do-stems').checked,
+        critique: document.getElementById('do-critique').checked,
+      }),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    const data = await resp.json();
+    jobId = data.job_id;
+    streamProgress(jobId);
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+function streamProgress(id) {
+  sseSource = new EventSource(`/jobs/${id}/stream`);
+
+  sseSource.onmessage = (e) => {
+    appendLog(e.data);
+    updatePhase(e.data);
+  };
+
+  sseSource.addEventListener('done', (e) => {
+    sseSource.close();
+    fetchResult(id);
+    document.getElementById('status-dot').className = 'done';
+    document.getElementById('status-text').textContent = 'Done!';
+    document.querySelectorAll('.phase').forEach(el => el.classList.add('done'));
+  });
+
+  sseSource.addEventListener('error', (e) => {
+    sseSource.close();
+    showError(e.data || 'Unknown error');
+  });
+}
+
+function updatePhase(msg) {
+  for (let i = 1; i <= 6; i++) {
+    if (phaseKeywords[i] && msg.includes(`[${i}/6]`)) {
+      currentPhase = i;
+      document.querySelectorAll('.phase').forEach(el => {
+        const n = parseInt(el.dataset.phase);
+        if (n < i) el.className = 'phase done';
+        else if (n === i) el.className = 'phase active';
+        else el.className = 'phase';
+      });
+      document.getElementById('status-text').textContent = msg.replace(/^\s*\[.*?\]\s*/, '').trim().slice(0, 80);
+      break;
+    }
+  }
+}
+
+function appendLog(msg) {
+  const log = document.getElementById('log');
+  const div = document.createElement('div');
+  div.className = 'log-line';
+  if (msg.match(/^\[(\d)\/6\]/)) div.classList.add('phase-header');
+  if (msg.includes('[warn]') || msg.includes('WARNING')) div.classList.add('warn');
+  if (msg.includes('Error') || msg.includes('error')) div.classList.add('error');
+  div.textContent = msg;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function fetchResult(id) {
+  const resp = await fetch(`/jobs/${id}`);
+  const job = await resp.json();
+  if (job.status !== 'done' || !job.result) return;
+  const r = job.result;
+
+  // Audio player
+  document.getElementById('player').src = `/jobs/${id}/audio`;
+  const dur = Math.round(r.duration_s);
+  document.getElementById('duration-text').textContent =
+    `${Math.floor(dur/60)}:${String(dur%60).padStart(2,'0')} • ${r.songs.length} songs`;
+
+  // Song list with transitions
+  const songs = r.songs;
+  const transitions = r.plan?.transitions || [];
+  const list = document.getElementById('song-list');
+  songs.forEach((song, i) => {
+    const row = document.createElement('div');
+    row.className = 'song-row';
+    const role = song.role || 'warm_up';
+    row.innerHTML = `
+      <div class="song-num">${i+1}</div>
+      <div class="song-info">
+        <div class="song-title">${escHtml(song.title || song.youtube_id || 'Unknown')}</div>
+        <div class="song-meta">${song.approx_bpm ? song.approx_bpm + ' BPM' : ''} ${song.genre ? '· ' + song.genre : ''}</div>
+      </div>
+      <span class="song-role role-${role}">${role.replace('_',' ')}</span>
+    `;
+    list.appendChild(row);
+    if (i < songs.length - 1) {
+      const arrow = document.createElement('div');
+      arrow.className = 'transition-arrow';
+      const tech = transitions[i]?.technique || 'bass_swap';
+      arrow.innerHTML = `<span>↓</span><span class="technique">${tech}</span>`;
+      list.appendChild(arrow);
+    }
+  });
+
+  // Critique
+  if (r.critique) {
+    const score = r.critique.score;
+    const block = document.getElementById('critique-block');
+    block.innerHTML = `
+      <div class="score-badge">
+        <span>Gemini critique score</span>
+        <span class="score-val">${score.toFixed(2)}</span>
+        <span style="color:var(--muted)">/ 1.0</span>
+      </div>
+      <p style="color:var(--muted);font-size:0.82rem;margin-top:10px;">${escHtml(r.critique.overall || '')}</p>
+    `;
+  }
+
+  document.getElementById('result-card').classList.add('visible');
+}
+
+function showError(msg) {
+  document.getElementById('generate').disabled = false;
+  document.getElementById('status-dot').className = 'error';
+  document.getElementById('status-text').textContent = 'Error';
+  appendLog('ERROR: ' + msg);
+}
+
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+</script>
+</body>
+</html>

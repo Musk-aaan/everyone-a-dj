@@ -1,11 +1,16 @@
 """FastAPI service for the mashup product.
 
-Exposes a small set of endpoints so a web UI can:
-  - start a session with a vibe + optional seed songs
-  - search YouTube for songs to add
-  - add / replace / remove / reorder songs in the queue
-  - kick off rendering for ready segments
-  - fetch rendered MP3s for playback
+Exposes endpoints for two use cases:
+
+1. Full offline mashup (vibe → MP3):
+   POST /make-mashup      → {job_id}
+   GET  /jobs/{id}/stream → SSE progress events
+   GET  /jobs/{id}/audio  → MP3
+
+2. Live DJ session (real-time queue management):
+   POST /sessions         → session
+   POST /sessions/{sid}/songs / PUT / DELETE / move
+   POST /search, /suggest-next
 
 Run with:  uvicorn mashup.api:app --reload --port 8000
 """
@@ -13,18 +18,22 @@ Run with:  uvicorn mashup.api:app --reload --port 8000
 from __future__ import annotations
 
 import asyncio
+import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
-from . import discover, plan, session
+from . import discover, orchestrator, plan, session
 
 app = FastAPI(title="Everyone a DJ")
 mgr = session.SessionManager()
 _render_tasks: dict[str, asyncio.Task] = {}    # sid → background render loop
+
+# ── Offline mashup job store ─────────────────────────────────────────────────
+_jobs: dict[str, dict[str, Any]] = {}          # job_id → job state
 
 
 # ── Request / response models ────────────────────────────────────────────────
@@ -57,11 +66,129 @@ class SearchRequest(BaseModel):
     n: int = 8
 
 
+# ── Request models (offline mashup) ─────────────────────────────────────────
+
+class MakeMashupRequest(BaseModel):
+    vibe: str
+    n: int = 4
+    stems: bool = True
+    candidates: int = 12
+    critique: bool = False
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
-@app.get("/")
-def root() -> dict:
-    return {"name": "Everyone a DJ", "active_sessions": len(mgr.sessions)}
+@app.get("/", response_class=HTMLResponse)
+def root() -> str:
+    """Serve the web UI."""
+    ui = Path(__file__).parent / "static" / "index.html"
+    if ui.exists():
+        return ui.read_text()
+    return "<h1>Everyone a DJ API</h1><p>See /docs for API reference.</p>"
+
+
+@app.post("/make-mashup")
+async def make_mashup(req: MakeMashupRequest) -> dict:
+    """Start an offline mashup job. Returns job_id; stream progress via /jobs/{id}/stream."""
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {
+        "status": "running",
+        "progress": [],
+        "result": None,
+        "error": None,
+    }
+    asyncio.create_task(_run_mashup_job(job_id, req))
+    return {"job_id": job_id}
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str) -> dict:
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, f"job {job_id!r} not found")
+    return {
+        "status": job["status"],
+        "progress": job["progress"],
+        "result": job.get("result"),
+        "error": job.get("error"),
+    }
+
+
+@app.get("/jobs/{job_id}/stream")
+async def stream_job(job_id: str):
+    """SSE endpoint — streams progress lines as they arrive, then a final done/error event."""
+    if job_id not in _jobs:
+        raise HTTPException(404, f"job {job_id!r} not found")
+
+    async def event_gen():
+        sent = 0
+        while True:
+            job = _jobs[job_id]
+            msgs = job["progress"]
+            while sent < len(msgs):
+                line = msgs[sent].replace("\n", " ")
+                yield f"data: {line}\n\n"
+                sent += 1
+            if job["status"] == "done":
+                yield f"event: done\ndata: {job['result']['audio_path']}\n\n"
+                break
+            if job["status"] == "error":
+                yield f"event: error\ndata: {job['error']}\n\n"
+                break
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+@app.get("/jobs/{job_id}/audio")
+def get_job_audio(job_id: str):
+    """Download the finished MP3."""
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    if job["status"] != "done":
+        raise HTTPException(409, f"job not done (status={job['status']})")
+    audio = Path(job["result"]["audio_path"])
+    if not audio.exists():
+        raise HTTPException(500, "audio file missing on disk")
+    return FileResponse(str(audio), media_type="audio/mpeg",
+                        filename=f"mashup-{job_id[:8]}.mp3")
+
+
+async def _run_mashup_job(job_id: str, req: MakeMashupRequest) -> None:
+    """Async wrapper that runs orchestrator.make_mashup() in a thread pool."""
+    job = _jobs[job_id]
+    progress_lines: list[str] = job["progress"]
+
+    def on_progress(msg: str) -> None:
+        progress_lines.append(msg)
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: orchestrator.make_mashup(
+                vibe=req.vibe,
+                n_songs=req.n,
+                n_candidates=req.candidates,
+                do_stems=req.stems,
+                run_critique=req.critique,
+                on_progress=on_progress,
+            ),
+        )
+        job["status"] = "done"
+        job["result"] = {
+            "audio_path": result.audio_path,
+            "duration_s": result.duration_s,
+            "songs": result.songs,
+            "plan": result.plan,
+            "critique": result.critique,
+        }
+    except Exception as exc:
+        job["status"] = "error"
+        job["error"] = str(exc)
 
 
 @app.post("/sessions")

@@ -131,17 +131,24 @@ Candidate songs (with view counts, channel, duration):
 Pick {n} songs in the order they should play. CRITICAL constraints:
 
 1. **Tempo coherence is the #1 rule.** All {n} songs must be within roughly
-   ±15 BPM of each other. A mashup with songs at 92, 144, 167, and 103 BPM
+   ±12 BPM of each other. A mashup with songs at 92, 144, 167, and 103 BPM
    is unmixable — it will sound like jarring tempo jumps no matter what
    transition tricks we use. Pick a target tempo band first, then pick songs
    that ALL sit inside it. Use your musical knowledge of typical BPMs.
+   Songs marked "bpm=X" above are ground truth — trust those over your guess.
 
-2. **Energy arc** within the BPM band: warm-up → first peak → climax → cool-down.
+2. **Key harmony is the #2 rule.** Songs with incompatible keys clash badly
+   in transitions. Songs marked "key=X" above are ground truth. Prefer songs
+   whose keys are adjacent on the Camelot wheel (e.g. C major→G major,
+   A minor→E minor) or at least in related tonalities. Don't stack 4 songs
+   in 4 completely different keys — the transitions will sound like a car crash.
 
-3. **Cultural/musical relationship**: same era, similar genre, or compatible keys
+3. **Energy arc** within the BPM+key band: warm-up → first peak → climax → cool-down.
+
+4. **Cultural/musical relationship**: same era, similar genre, or compatible keys
    when you can. Don't mix Bollywood ballads with hard EDM.
 
-4. Avoid duplicate or near-duplicate tracks (same song, different uploads).
+5. Avoid duplicate or near-duplicate tracks (same song, different uploads).
 
 Return ONLY this JSON, nothing else:
 {{
@@ -158,23 +165,27 @@ Return ONLY this JSON, nothing else:
 
 
 def pick_songs(vibe: str, candidates: list, n: int = 4,
-               bpm_hints: Optional[dict[str, float]] = None) -> dict:
+               bpm_hints: Optional[dict[str, float]] = None,
+               key_hints: Optional[dict[str, str]] = None) -> dict:
     """Pick `n` songs from `candidates` that work together for `vibe`.
 
     `candidates` is a list of discover.Candidate (or dicts).
-    `bpm_hints`: optional {youtube_id: bpm} for any candidates we've already
-    analyzed. The LLM uses these as ground truth for tempo coherence.
+    `bpm_hints`: optional {youtube_id: bpm} — LLM uses these as ground truth.
+    `key_hints`: optional {youtube_id: "C major"} — LLM uses for harmony check.
     """
     bpm_hints = bpm_hints or {}
+    key_hints = key_hints or {}
     lines = []
     for c in candidates:
         d = c if isinstance(c, dict) else c.__dict__
         mins, secs = divmod(int(d.get("duration_s", 0)), 60)
         bpm = bpm_hints.get(d["youtube_id"])
+        key = key_hints.get(d["youtube_id"])
         bpm_note = f"  bpm={bpm:.0f}" if bpm else "  bpm=unknown"
+        key_note = f"  key={key}" if key else ""
         lines.append(
             f"  - youtube_id={d['youtube_id']}  title={d['title']!r}  "
-            f"channel={d.get('channel', '')!r}  dur={mins}:{secs:02d}{bpm_note}"
+            f"channel={d.get('channel', '')!r}  dur={mins}:{secs:02d}{bpm_note}{key_note}"
         )
     prompt = _PICK_SONGS_PROMPT.format(
         n=n, vibe=vibe, candidate_list="\n".join(lines)
@@ -280,10 +291,11 @@ CRITICAL CONSTRAINTS:
   a crash. In those cases use bass_swap, reverb_throw, or acapella_drop which
   provide a blending buffer that hides the genre shift.
 
-- **Variety matters.** Real DJs don't use the same technique 3 times in a
-  row. If the previous transition was bass_swap, this one should NOT also
-  be bass_swap unless there's a strong musical reason. Push toward
-  acapella_drop, drum_swap, reverb_throw, hard_drop when stems allow.
+- **Variety is enforced.** The previous transition used: {previous_technique}.
+  You MUST pick a different technique this time unless there is an overwhelming
+  reason not to. Using the same technique back-to-back makes the mix feel
+  mechanical. Push toward acapella_drop, drum_swap, reverb_throw, hard_drop,
+  tempo_ramp — something different from what was just used.
 
 - **Drops are special.** hard_drop adds energy; dramatic_drop is the climax
   moment. Use them at peak positions in the set (middle transitions of a
@@ -343,12 +355,14 @@ def plan_transition(*,
                     out_lyric: str, out_stems: bool, out_genre: str = "unknown",
                     in_title: str,  in_bpm: float, in_key: str, in_mode: str,
                     in_lyric: str, in_stems: bool, in_genre: str = "unknown",
-                    position: int, total: int) -> dict:
+                    position: int, total: int,
+                    previous_technique: Optional[str] = None) -> dict:
     """LLM picks ONE transition technique by name from a fixed menu.
 
     Returns: {"technique": str, "reasoning": str}.
     The orchestrator dispatches to the matching render function.
     """
+    prev = previous_technique or "none (this is the first transition)"
     prompt = _PLAN_TRANSITION_PROMPT.format(
         out_title=out_title, out_bpm=out_bpm, out_key=out_key, out_mode=out_mode,
         out_lyric=out_lyric or "(instrumental)", out_stems=str(out_stems).lower(),
@@ -357,6 +371,7 @@ def plan_transition(*,
         in_lyric=in_lyric or "(instrumental)", in_stems=str(in_stems).lower(),
         in_genre=in_genre,
         position=position, total=total,
+        previous_technique=prev,
     )
     return _parse_json(_call(prompt, max_tokens=800))
 
