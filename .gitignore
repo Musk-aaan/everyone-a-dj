@@ -1,0 +1,17 @@
+# Cached audio artifacts (regenerable)
+audio/*.mp3
+audio/*.wav
+cache/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Env
+.env
+
+# OS
+.DS_Store

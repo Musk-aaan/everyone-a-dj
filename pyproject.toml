@@ -1,0 +1,68 @@
+[project]
+name = "mashup"
+version = "0.1.0"
+description = "Everyone a DJ — AI mashup generator"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+    "yt-dlp>=2024.1.0",
+]
+
+[project.optional-dependencies]
+# Phase 1: discovery
+discovery = [
+    "google-api-python-client>=2.100",
+    "spotipy>=2.23",
+]
+# Phase 2: lyrics
+lyrics = [
+    "lyricsgenius>=3.0",
+    "openai>=1.30",
+]
+# Phase 3: audio intelligence
+analysis = [
+    "librosa>=0.10",
+    "numpy>=1.24",
+    "soundfile>=0.12",
+    "scipy>=1.11",
+]
+# Phase 4: stem separation
+stems = [
+    "demucs>=4.0",
+    "torch>=2.0",
+]
+# Phase 5: LLM brain (Gemini 2.5 Flash via OpenRouter — no SDK needed, plain HTTP)
+# Already covered by `requests` in the base deps.
+brain = []
+# Phase 6: pro DSP
+render = [
+    "pedalboard>=0.9",
+    "pydub>=0.25",
+    "pyloudnorm>=0.1",
+]
+# Phase 7: API
+api = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+]
+# Phase 8: live mode (audio playback through speakers)
+live = [
+    "sounddevice>=0.5",
+]
+
+all = [
+    "mashup[discovery,lyrics,analysis,stems,brain,render,api,live]",
+]
+
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+mashup = "mashup.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
