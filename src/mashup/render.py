@@ -339,24 +339,34 @@ def hard_drop(
 ) -> np.ndarray:
     """The classic festival/club drop — short, punchy, <2 seconds total.
 
-      1. Hard cut at end of A (no fade — the cut IS the drama)
+      1. Tiny 1/4-beat anti-click fade on A's tail (eliminates the "pop"
+         of a hard cut — imperceptible)
       2. Exactly `silence_beats` of silence (default 1 beat = ~0.6s at 99 BPM)
       3. CRASH cymbal + B's full mix slam in simultaneously on beat 1
 
-    No quiet bass intro, no fade. The whole "drop moment" lasts about as long
-    as the silence — usually under a second. The contrast of total silence
-    against full-volume slam is what makes it pop.
+    The contrast of total silence against full-volume slam is what makes
+    it pop. Use this 80% of the time you want a drop. Reserve
+    `dramatic_drop` for once-per-set climax moments.
 
-    Use this 80% of the time you want a drop. Reserve `dramatic_drop` for
-    once-per-set big moments.
+    SYSTEM NOTE: For hard_drop to truly land, B's audio (passed as `b_full`)
+    should START at a high-energy moment (a kick / vocal hook) rather than
+    a quiet intro. The orchestrator handles this by re-loading B from its
+    peak_moment, snapped to the previous downbeat — see
+    orchestrator._render_pipeline's hard_drop branch.
     """
     SR = config.SR
     beat_n = int(60.0 / bpm * SR)
     silence_n = int(silence_beats * beat_n)
 
+    a_out = a.copy().astype(np.float32)
+    # Anti-click: fade A's last 1/4 beat to silence
+    fade_n = min(beat_n // 4, a_out.shape[1])
+    if fade_n > 0:
+        a_out[:, -fade_n:] *= np.linspace(1.0, 0.0, fade_n)
+
     silence = np.zeros((2, silence_n), dtype=np.float32)
     out_b = stamp_crash(b_full.astype(np.float32), gain=crash_gain)
-    return np.concatenate([a.astype(np.float32), silence, out_b], axis=1)
+    return np.concatenate([a_out, silence, out_b], axis=1)
 
 
 def dramatic_drop(

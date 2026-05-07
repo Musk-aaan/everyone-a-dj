@@ -293,8 +293,26 @@ def _render_pipeline(enriched: list[dict],
                 )
 
             elif technique == "hard_drop":
+                # SYSTEM-LEVEL: a hard_drop only lands if B slams in at a HIGH-ENERGY
+                # moment (kick / vocal hook), not at the section's quiet intro.
+                # Find B's loudest peak inside the chosen section, snap it to the
+                # nearest downbeat at or before, and reload B starting there.
+                an_n = next_e["analysis"]
+                section_peaks = [p for p in an_n.get("peak_moments", [])
+                                 if sec_next["start"] <= p["t"] < sec_next["end"]]
+                if section_peaks:
+                    peak_t = max(section_peaks, key=lambda p: p["rms"])["t"]
+                    downbeats = an_n.get("downbeats", []) or []
+                    snap_t = max((d for d in downbeats if d <= peak_t),
+                                 default=sec_next["start"])
+                    on_progress(f"      hard_drop landing on B's peak at {snap_t:.1f}s "
+                                f"(was section start {sec_next['start']:.1f}s)")
+                    next_aud_drop = render.load_section(sid_next, snap_t, sec_next["end"])
+                    next_aud_drop = render.bpm_stretch(next_aud_drop, next_bpm, target_bpm)
+                else:
+                    next_aud_drop = next_aud
                 mix = render.hard_drop(
-                    mix, next_aud,
+                    mix, next_aud_drop,
                     silence_beats=1.0, crash_gain=0.95, bpm=target_bpm,
                 )
 
